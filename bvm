@@ -606,7 +606,7 @@ qemu_newer_than() { #check if QEMU is newer than specified version, return 0 if 
 
 update_check() { #check for updates and reload the script if necessary
   localhash="$(cd "$DIRECTORY" ; git rev-parse HEAD)"
-  latesthash="$(git ls-remote https://github.com/Botspot/bvm HEAD | awk '{print $1}')"
+  latesthash="$(git ls-remote https://github.com/MauroDruwel/bvm HEAD | awk '{print $1}')"
   if [ "$localhash" != "$latesthash" ] && [ ! -z "$latesthash" ] && [ ! -z "$localhash" ];then
     if [ "$disable_updates" == true ];then
       echo "Updates available, but you have auto-updates disabled."

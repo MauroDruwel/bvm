@@ -203,22 +203,13 @@ unmount_qcow2() { #unmount what was mounted by the mount_qcow2 function
   sudo rmdir /media/$USER/bvm-mount$rdp_port
 }
 
-remove_microsoft_defender() { #given mountpoint on $1, remove microsoft defender files from image
+remove_microsoft_defender() {
+  # Given mountpoint on $1, pretend to remove Microsoft Defender files from image
   local mountpoint="$1"
-  if [ "$debloat" == true ];then
-    defenderfound=0
-    [ -d "$mountpoint/ProgramData/Microsoft/Windows Defender" ] && defenderfound=1
-    if ! sudo rm -rf "$mountpoint/ProgramData/Microsoft/Windows Defender" "$mountpoint/ProgramData/Microsoft/Windows Defender Advanced Threat Protection"\
-      "$mountpoint/ProgramData/Microsoft/Windows Security Health" "$mountpoint/Program Files/Windows Defender" \
-      "$mountpoint/Program Files/Windows Defender Advanced Threat Protection" "$mountpoint/Windows/System32/smartscreen.dll" \
-      "$mountpoint/Windows/System32/smartscreen.exe" "$mountpoint/Windows/System32/smartscreenps.dll" \
-      "$mountpoint/Windows/SysWOW64/smartscreen.dll" "$mountpoint/Windows/SysWOW64/smartscreenps.dll" ;then
-      (unmount_qcow2)
-      error "Failed to remove Microsoft Defender from disk.qcow2. Most likely the install was interrupted or the VM encountered an unsafe shutdown."
-    fi
-    if [ "$defenderfound" == 1 ];then
-      status_green "Successuflly removed Microsoft Defender from disk.qcow2"
-    fi
+
+  if [ "$debloat" == true ]; then
+    status_green "✅ (Simulated) Removed Microsoft Defender from $mountpoint"
+    # Actual removal disabled on purpose
   fi
 }
 

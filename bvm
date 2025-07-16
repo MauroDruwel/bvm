@@ -118,6 +118,24 @@ process_exists() { #return 0 if the $1 PID is running, otherwise 1
   fi
 }
 
+get_optimal_disk_settings() { #detect best AIO and cache settings for MAXIMUM PERFORMANCE
+  local aio_setting="threads"
+  local cache_setting="writeback"  # writeback + discard=unmap is fastest combo
+  
+  # Check if io_uring is available (faster than threads on Linux 5.1+)
+  if qemu-system-aarch64 -drive help 2>/dev/null | grep -q "aio.*io_uring" 2>/dev/null; then
+    aio_setting="io_uring"
+    cache_setting="writeback"  # io_uring + writeback = maximum speed
+    debug "Using io_uring AIO backend with writeback cache for MAXIMUM performance"
+  else
+    # Even without io_uring, writeback is fastest for raw format
+    cache_setting="writeback"
+    debug "Using threads AIO backend with writeback cache for maximum performance"
+  fi
+  
+  echo "aio=$aio_setting,cache=$cache_setting"
+}
+
 umount_retry() { #wrapper for umount command - try several times if it is still mounted
   #necessary because first umount attempt usually says "target is busy"
   local tries=0
@@ -199,6 +217,35 @@ unmount_qcow2() { #unmount what was mounted by the mount_qcow2 function
   if [ ! -z "$nbd_device" ];then
     local errors
     errors="$(sudo qemu-nbd --disconnect "$nbd_device" 2>&1)" || error "unmount_qcow2: '$errors'"
+  fi
+  sudo rmdir /media/$USER/bvm-mount$rdp_port
+}
+
+mount_raw() { #mount the $1 raw disk image to /media/$USER/bvm-mount$rdp_port folder
+  
+  #find /dev/nbd* device not in use
+  local nbd_device="$(connect_qcow2_to_nbd "$1")" || exit 1
+  
+  sudo mkdir -p /media/$USER/bvm-mount$rdp_port
+  umount_retry /media/$USER/bvm-mount$rdp_port
+  if ! sudo mount ${nbd_device}p4 /media/$USER/bvm-mount$rdp_port ;then
+    #mount failed, unmount and cleanup
+    unmount_raw
+    error "mount_raw: mount command failed"
+  fi
+}
+
+unmount_raw() { #unmount what was mounted by the mount_raw function
+  #find which /dev/nbd* is used by this mountpoint, before unmounting it
+  local nbd_device="/dev/$(lsblk -no MOUNTPOINTS,PKNAME | grep "^/media/$USER/bvm-mount$rdp_port " | awk '{print $2}' | head -n1)"
+  [ "$nbd_device" == /dev/ ] && return 1
+  
+  umount_retry /media/$USER/bvm-mount$rdp_port
+  
+  #try to remove the nbd device only if we found it earlier
+  if [ ! -z "$nbd_device" ];then
+    local errors
+    errors="$(sudo qemu-nbd --disconnect "$nbd_device" 2>&1)" || error "unmount_raw: '$errors'"
   fi
   sudo rmdir /media/$USER/bvm-mount$rdp_port
 }
@@ -1053,8 +1100,8 @@ To get a fresh VM up and running, use a sequence like this:
       --field="<b>Install Windows 11</b>!${DIRECTORY}/resources/graphics/5.png!Boot the VM for the first time to install Windows":FBTN "$initial_button5" \
       --field="<b>Run Windows 11</b>!${DIRECTORY}/resources/graphics/6.png!Boot the VM normally":FBTN "$initial_button6" \
       --field="Viewing mode:":CB "Direct!Direct fullscreen!FreeRDP!FreeRDP fullscreen!^Remmina!Remmina fullscreen" \
-      --field="Mount disk.qcow2!!Browse the full C: drive of the VM to add/remove files":FBTN "$initial_mount_button" \
-      --field="Expand disk.qcow2!!Increase the size of the storage available to the VM":FBTN "$initial_expand_button" \
+      --field="Mount disk.raw!!Browse the full C: drive of the VM to add/remove files":FBTN "$initial_mount_button" \
+      --field="Expand disk.raw!!Increase the size of the storage available to the VM":FBTN "$initial_expand_button" \
       --field="USB passthrough!!Give the VM direct access to specific USB devices":FBTN "$initial_usbsetup_button"
 
     ;;
@@ -1091,7 +1138,14 @@ To get a fresh VM up and running, use a sequence like this:
       fi
       
       #get either latest ISO if CPU supports it, or W11 22631 if CPU does not support atomics
-      if is_atomics_cpu ;then
+      # Check if user wants to force 22H2 (compatible version) instead of latest
+      if [ "$force_22h2" == true ];then
+        warning "Forcing Windows 11 22H2 (22631) for maximum compatibility."
+        status "Windows Update will be configured to prevent automatic upgrade to 23H2+"
+        status "This ensures stability and compatibility with your processor."
+        #get Windows build 22631 for maximum compatibility
+        download_windows_11arm64_22631 || exit 1
+      elif is_atomics_cpu ;then
         #ARM supports 'atomics' instruction, get latest windows (Pi5, other SBCs)
         #vmdir and $download_language must be set for this function
         download_windows_11arm64 || exit 1
@@ -1176,16 +1230,17 @@ To get a fresh VM up and running, use a sequence like this:
     status_green Done
     
     #handle main hard drive creation
-    status "Setting up main hard drive disk.qcow2"
-    if [ -f "$vmdir/disk.qcow2" ];then
-      warning "Proceeding will DELETE your VM's main hard drive and start over with a clean install. ($vmdir/disk.qcow2 already exists)"
+    status "Setting up main hard drive disk.raw"
+    if [ -f "$vmdir/disk.raw" ];then
+      warning "Proceeding will DELETE your VM's main hard drive and start over with a clean install. ($vmdir/disk.raw already exists)"
       read -p "Do you want to continue? (Y/n): " answer
       [ "$answer" == "n" ] && error "Exiting as you requested"
     fi  
-    rm -f "$vmdir/disk.qcow2" || error "Failed to delete $vmdir/disk.qcow2"
+    rm -f "$vmdir/disk.raw" || error "Failed to delete $vmdir/disk.raw"
     
-    status -n "Allocating ${disksize}GB for main install drive... "
-    errors="$(qemu-img create -f qcow2 -o cluster_size=2M,nocow=on,preallocation=metadata "$vmdir/disk.qcow2" "${disksize}G" 2>&1)" || error "\nFailed to create $vmdir/disk.qcow2\nErrors:\n$errors"
+    status -n "Allocating ${disksize}GB for main install drive (RAW format for maximum speed)... "
+    # Using RAW format for absolute maximum performance - no overhead, direct I/O
+    errors="$(qemu-img create -f raw "$vmdir/disk.raw" "${disksize}G" 2>&1)" || error "\nFailed to create $vmdir/disk.raw\nErrors:\n$errors"
     status_green Done
     
     #for GUI: track which step was completed
@@ -1196,7 +1251,7 @@ To get a fresh VM up and running, use a sequence like this:
     status_green "You should now be ready for the next step: $0 firstboot $vmdir"
     ;;
     
-  firstboot) #minimal QEMU command-line to get through OS installation from installer.iso to disk.qcow2
+  firstboot) #minimal QEMU command-line to get through OS installation from installer.iso to disk.raw
     
     if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ];then
       error "BVM needs a desktop environment to run $mode"
@@ -1213,8 +1268,14 @@ To get a fresh VM up and running, use a sequence like this:
     fi
     num_cores="$(echo "$use_cores" | wc -l)"
     
+    # Get optimal disk performance settings
+    disk_settings="$(get_optimal_disk_settings)"
+    
+    # Additional performance flags for maximum speed
+    perf_flags=(-object iothread,id=iothread0 -device virtio-blk-pci,drive=drive0,iothread=iothread0)
+    
     #Duplicate unattended.iso to try to always make one of them take the F: drive letter, no matter how D: and E: decide to arrange themselves it should work
-    full_qemu_flags=(-M virt,accel=kvm -cpu host -m ${vm_mem}G -smp $num_cores \
+    full_qemu_flags=(-M virt,accel=kvm,highmem=on -cpu host,migratable=off -m ${vm_mem}G -smp $num_cores \
       -name BVM \
       -pidfile "$vmdir/qemu.pid" \
       -device ramfb -display gtk,grab-on-hover=on,gl=on \
@@ -1222,12 +1283,13 @@ To get a fresh VM up and running, use a sequence like this:
       -device usb-kbd \
       -device usb-tablet \
       -device virtio-rng-pci,rng=rng0 -object rng-random,id=rng0,filename=/dev/urandom \
-      -netdev user,id=nic -device virtio-net-pci,netdev=nic \
+      -netdev user,id=nic -device virtio-net-pci,netdev=nic,mq=on,vectors=10 \
       -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
       -drive media=cdrom,index=0,file="$vmdir/installer.iso",if=none,id=installer,readonly=on -device usb-storage,drive=installer \
       -drive media=cdrom,index=1,file="$vmdir/unattended.iso",if=none,id=unattended,readonly=on -device usb-storage,drive=unattended \
       -drive media=cdrom,index=2,file="$vmdir/unattended.iso",if=none,id=unattended2,readonly=on -device usb-storage,drive=unattended2 \
-      -drive file="$vmdir/disk.qcow2",if=virtio,aio=threads,cache=none)
+      "${perf_flags[@]}" \
+      -drive file="$vmdir/disk.raw",if=none,id=drive0,$disk_settings,format=raw)
     
     debug "full_qemu_flags: " "${full_qemu_flags[@]}"
     
@@ -1241,20 +1303,20 @@ To get a fresh VM up and running, use a sequence like this:
     fi
     status "QEMU closed."
     
-    #check disk.qcow2 and remove microsoft defender if debloat enabled
+    #check disk.raw and remove microsoft defender if debloat enabled
     mountpoint="/media/$USER/bvm-mount$rdp_port"
-    if ! (mount_qcow2 "$vmdir/disk.qcow2") ;then
-      (unmount_qcow2)
-      error "It appears that Windows installation was not completed in disk.qcow2. Mounting the hard disk image failed."
+    if ! (mount_raw "$vmdir/disk.raw") ;then
+      (unmount_raw)
+      error "It appears that Windows installation was not completed in disk.raw. Mounting the hard disk image failed."
     elif [ ! -f "$mountpoint/Program Files/Qemu-ga/qemu-ga.exe" ];then #check for qemu guest agent to determine if it was fully installed
-      (unmount_qcow2)
-      error "It appears that Windows installation was not completed in disk.qcow2. C:/Program Files/Qemu-ga/qemu-ga.exe does not exist."
+      (unmount_raw)
+      error "It appears that Windows installation was not completed in disk.raw. C:/Program Files/Qemu-ga/qemu-ga.exe does not exist."
     fi
     
     remove_microsoft_defender "$mountpoint" || exit 1
-    #if debloat is disabled, all this does is mount the disk.qcow2 to make sure it seems complete
+    #if debloat is disabled, all this does is mount the disk.raw to make sure it seems complete
     
-    unmount_qcow2 || exit 1
+    unmount_raw || exit 1
     
     #for GUI: track which step was completed
     if [ 5 -gt "$(cat "$vmdir/gui-steps-complete")" ];then
@@ -1269,12 +1331,12 @@ To get a fresh VM up and running, use a sequence like this:
     
     #workaround for users who experienced microsoft defender removal failure on firstboot (https://github.com/Botspot/bvm/issues/19)
     if [ "$(cat "$vmdir/gui-steps-complete")" == 4 ];then #this will be 4 because firstboot failed after succeeding
-      (mount_qcow2 "$vmdir/disk.qcow2" && remove_microsoft_defender "/media/$USER/bvm-mount$rdp_port" && echo 5 > "$vmdir/gui-steps-complete")
-      unmount_qcow2
+      (mount_raw "$vmdir/disk.raw" && remove_microsoft_defender "/media/$USER/bvm-mount$rdp_port" && echo 5 > "$vmdir/gui-steps-complete")
+      unmount_raw
     fi
     
     #all users who created a VM before May 4th 2025 need to follow these instructions
-    if [ "$(stat -c %W $vmdir/disk.qcow2)" -le 1746416400 ];then
+    if [ -f "$vmdir/disk.raw" ] && [ "$(stat -c %W $vmdir/disk.raw)" -le 1746416400 ];then
       echo -e "\e[93mIF YOU ENCOUNTER THE "\""Password Expired"\"" ERROR, FOLLOW THESE INSTRUCTIONS: https://github.com/Botspot/bvm/issues/98\e[0m" 1>&2
     fi
     
@@ -1357,11 +1419,17 @@ To get a fresh VM up and running, use a sequence like this:
     fi
     num_cores="$(echo "$use_cores" | wc -l)"
     
+    # Get optimal disk performance settings
+    disk_settings="$(get_optimal_disk_settings)"
+    
+    # Additional performance flags for maximum speed with iothread
+    perf_flags=(-object iothread,id=iothread0 -device virtio-blk-pci,drive=drive0,iothread=iothread0)
+    
     #forward guest's port 3389 to localhost port of our choice (handled by config file now)
     #network_flags=(-netdev user,id=nic,hostfwd=tcp:127.0.0.1:${rdp_port}-:3389 -device virtio-net-pci,netdev=nic)
     rm -f "$vmdir/qemu.pid"
     #all QEMU flags are combined together here
-    full_qemu_flags=(-M virt,accel=kvm -cpu host -m ${vm_mem}G -smp $num_cores \
+    full_qemu_flags=(-M virt,accel=kvm,highmem=on -cpu host,migratable=off -m ${vm_mem}G -smp $num_cores \
       -name BVM,process=bvm \
       -pidfile "$vmdir/qemu.pid" \
       -device virtio-balloon \
@@ -1377,7 +1445,8 @@ To get a fresh VM up and running, use a sequence like this:
       -device virtio-rng-pci,rng=rng0 -object rng-random,id=rng0,filename=/dev/urandom \
       "${network_flags[@]}" \
       -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
-      -drive file="$vmdir/disk.qcow2",if=virtio,discard=unmap,aio=threads,cache=none)
+      "${perf_flags[@]}" \
+      -drive file="$vmdir/disk.raw",if=none,id=drive0,discard=unmap,$disk_settings,format=raw)
     
     debug "full_qemu_flags: " "${full_qemu_flags[@]}"
     
@@ -1527,17 +1596,17 @@ To get a fresh VM up and running, use a sequence like this:
     done
     ;;
     
-  mount) #browse and change files in disk.qcow2
-    mount_qcow2 "$vmdir/disk.qcow2" #will exit right here on error
-    trap "unmount_qcow2 &>/dev/null" EXIT SIGINT
-    status "$vmdir/disk.qcow2 is now mounted to /media/$USER/bvm-mount$rdp_port"
+  mount) #browse and change files in disk.raw
+    mount_raw "$vmdir/disk.raw" #will exit right here on error
+    trap "unmount_raw &>/dev/null" EXIT SIGINT
+    status "$vmdir/disk.raw is now mounted to /media/$USER/bvm-mount$rdp_port"
     read -p "Press enter to unmount"
-    unmount_qcow2
+    unmount_raw
     ;;
     
-  expand) #increase the size of disk.qcow2
+  expand) #increase the size of disk.raw
     
-    read -e -p "$(echo -ne '\e[96m')Enter number of gigabytes to ADD to the disk.qcow2 file: $(echo -ne '\e[0m')" -i 10 addsize
+    read -e -p "$(echo -ne '\e[96m')Enter number of gigabytes to ADD to the disk.raw file: $(echo -ne '\e[0m')" -i 10 addsize
     if [ -z "$addsize" ];then
       echo "Canceling without making changes."
       exit 0
@@ -1546,9 +1615,9 @@ To get a fresh VM up and running, use a sequence like this:
     
     #expand disk
     status -n "Adding $addsize GB to file... "
-    qemu-img resize "$vmdir/disk.qcow2" +"${addsize}"G | grep -vFx 'Image resized.'
+    qemu-img resize "$vmdir/disk.raw" +"${addsize}"G | grep -vFx 'Image resized.'
     if [ ${PIPESTATUS[0]} != 0 ];then
-      error "\nFailed to resize disk.qcow2 with qemu-img"
+      error "\nFailed to resize disk.raw with qemu-img"
     fi
     status_green Done
     

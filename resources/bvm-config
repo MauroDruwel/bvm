@@ -15,6 +15,10 @@ vm_password="win11arm"
 #Select Windows language to download. List all languages with: bvm list-languages
 download_language="English (United States)"
 
+#Force Windows 11 22H2 (build 22631) instead of latest version for maximum compatibility and stability
+#Set to false if you want the latest Windows 11 version (may have compatibility issues)
+force_22h2=true
+
 #Change this to false if you don't want Microsoft bloatware, ads, and Windows Defender removed during firstboot.
 debloat=true
 #Be aware that other registry changes (like dark mode, disabling hibernation, and RDP) will still be run on the VM.

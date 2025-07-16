@@ -49,6 +49,29 @@ Execute-Command 'net start TermService'
 # This is now skipped due to https://github.com/Botspot/bvm/issues/48
 #Execute-Command 'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" /v MaxDisconnectionTime /t REG_DWORD /d 60000 /f'
 
+# Block Windows feature updates (prevents 22H2 -> 23H2 upgrade)
+Write-Output "`n========== Blocking Windows Feature Updates =========="
+Execute-Command 'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v TargetReleaseVersion /t REG_DWORD /d 1 /f'
+Execute-Command 'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v TargetReleaseVersionInfo /t REG_SZ /d "22H2" /f'
+Execute-Command 'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v ProductVersion /t REG_SZ /d "Windows 11" /f'
+
+# Additional Windows Update controls
+Execute-Command 'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoUpdate /t REG_DWORD /d 0 /f'
+Execute-Command 'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v AUOptions /t REG_DWORD /d 2 /f'
+Execute-Command 'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v IncludeRecommendedUpdates /t REG_DWORD /d 1 /f'
+Execute-Command 'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /t REG_DWORD /d 1 /f'
+
+# Block feature updates via additional registry keys
+Execute-Command 'reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings" /v DeferFeatureUpdatesPeriodInDays /t REG_DWORD /d 365 /f'
+Execute-Command 'reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings" /v ExcludeWUDriversInQualityUpdate /t REG_DWORD /d 1 /f'
+
+# Set Windows Update to download security updates only
+Execute-Command 'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v DeferFeatureUpdates /t REG_DWORD /d 1 /f'
+Execute-Command 'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v DeferFeatureUpdatesPeriodInDays /t REG_DWORD /d 365 /f'
+Execute-Command 'reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v BranchReadinessLevel /t REG_DWORD /d 32 /f'
+
+Write-Output "Windows Update configured to stay on 22H2 and only install security updates."
+
 # Prevent "your password has expired and must be changed" after 42 days from using BVM
 Execute-Command 'net accounts /maxpwage:unlimited'
 

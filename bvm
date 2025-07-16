@@ -123,12 +123,14 @@ get_optimal_disk_settings() { #detect best AIO and cache settings for MAXIMUM PE
   local cache_setting="writeback"  # writeback + discard=unmap is fastest combo
   
   # Check if io_uring is available (faster than threads on Linux 5.1+)
-  if qemu-system-aarch64 -drive help 2>/dev/null | grep -q "aio.*io_uring" 2>/dev/null; then
+  # Use a more robust check that works across different QEMU versions
+  if command -v qemu-system-aarch64 >/dev/null 2>&1 && \
+     timeout 5s qemu-system-aarch64 -drive help 2>/dev/null | grep -q "aio.*io_uring" 2>/dev/null; then
     aio_setting="io_uring"
     cache_setting="writeback"  # io_uring + writeback = maximum speed
     debug "Using io_uring AIO backend with writeback cache for MAXIMUM performance"
   else
-    # Even without io_uring, writeback is fastest for raw format
+    # Fallback: use threads with writeback for raw format (still very fast)
     cache_setting="writeback"
     debug "Using threads AIO backend with writeback cache for maximum performance"
   fi
@@ -1271,11 +1273,21 @@ To get a fresh VM up and running, use a sequence like this:
     # Get optimal disk performance settings
     disk_settings="$(get_optimal_disk_settings)"
     
-    # Additional performance flags for maximum speed
-    perf_flags=(-object iothread,id=iothread0 -device virtio-blk-pci,drive=drive0,iothread=iothread0)
+    # Additional performance flags for maximum speed (with fallback compatibility)
+    # Check if iothread is supported before using it
+    if timeout 5s qemu-system-aarch64 -object help 2>/dev/null | grep -q "iothread" 2>/dev/null; then
+      perf_flags=(-object iothread,id=iothread0 -device virtio-blk-pci,drive=drive0,iothread=iothread0)
+      drive_config=(-drive file="$vmdir/disk.raw",if=none,id=drive0,$disk_settings,format=raw)
+      debug "Using dedicated iothread for maximum disk performance"
+    else
+      # Fallback to standard virtio without iothread
+      perf_flags=()
+      drive_config=(-drive file="$vmdir/disk.raw",if=virtio,$disk_settings,format=raw)
+      debug "Using standard virtio (iothread not available)"
+    fi
     
     #Duplicate unattended.iso to try to always make one of them take the F: drive letter, no matter how D: and E: decide to arrange themselves it should work
-    full_qemu_flags=(-M virt,accel=kvm,highmem=on -cpu host,migratable=off -m ${vm_mem}G -smp $num_cores \
+    full_qemu_flags=(-M virt,accel=kvm,highmem=on -cpu host -m ${vm_mem}G -smp $num_cores \
       -name BVM \
       -pidfile "$vmdir/qemu.pid" \
       -device ramfb -display gtk,grab-on-hover=on,gl=on \
@@ -1289,7 +1301,7 @@ To get a fresh VM up and running, use a sequence like this:
       -drive media=cdrom,index=1,file="$vmdir/unattended.iso",if=none,id=unattended,readonly=on -device usb-storage,drive=unattended \
       -drive media=cdrom,index=2,file="$vmdir/unattended.iso",if=none,id=unattended2,readonly=on -device usb-storage,drive=unattended2 \
       "${perf_flags[@]}" \
-      -drive file="$vmdir/disk.raw",if=none,id=drive0,$disk_settings,format=raw)
+      "${drive_config[@]}")
     
     debug "full_qemu_flags: " "${full_qemu_flags[@]}"
     
@@ -1422,14 +1434,24 @@ To get a fresh VM up and running, use a sequence like this:
     # Get optimal disk performance settings
     disk_settings="$(get_optimal_disk_settings)"
     
-    # Additional performance flags for maximum speed with iothread
-    perf_flags=(-object iothread,id=iothread0 -device virtio-blk-pci,drive=drive0,iothread=iothread0)
+    # Additional performance flags for maximum speed (with fallback compatibility)
+    # Check if iothread is supported before using it
+    if timeout 5s qemu-system-aarch64 -object help 2>/dev/null | grep -q "iothread" 2>/dev/null; then
+      perf_flags=(-object iothread,id=iothread0 -device virtio-blk-pci,drive=drive0,iothread=iothread0)
+      drive_config=(-drive file="$vmdir/disk.raw",if=none,id=drive0,discard=unmap,$disk_settings,format=raw)
+      debug "Using dedicated iothread for maximum disk performance"
+    else
+      # Fallback to standard virtio without iothread
+      perf_flags=()
+      drive_config=(-drive file="$vmdir/disk.raw",if=virtio,discard=unmap,$disk_settings,format=raw)
+      debug "Using standard virtio (iothread not available)"
+    fi
     
     #forward guest's port 3389 to localhost port of our choice (handled by config file now)
     #network_flags=(-netdev user,id=nic,hostfwd=tcp:127.0.0.1:${rdp_port}-:3389 -device virtio-net-pci,netdev=nic)
     rm -f "$vmdir/qemu.pid"
     #all QEMU flags are combined together here
-    full_qemu_flags=(-M virt,accel=kvm,highmem=on -cpu host,migratable=off -m ${vm_mem}G -smp $num_cores \
+    full_qemu_flags=(-M virt,accel=kvm,highmem=on -cpu host -m ${vm_mem}G -smp $num_cores \
       -name BVM,process=bvm \
       -pidfile "$vmdir/qemu.pid" \
       -device virtio-balloon \
@@ -1446,7 +1468,7 @@ To get a fresh VM up and running, use a sequence like this:
       "${network_flags[@]}" \
       -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
       "${perf_flags[@]}" \
-      -drive file="$vmdir/disk.raw",if=none,id=drive0,discard=unmap,$disk_settings,format=raw)
+      "${drive_config[@]}")
     
     debug "full_qemu_flags: " "${full_qemu_flags[@]}"
     

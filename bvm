@@ -152,9 +152,20 @@ umount_retry() { #wrapper for umount command - try several times if it is still 
   done
 }
 
-connect_qcow2_to_nbd() { #find unused /dev/nbd* device to use, register it with the specified qcow2 image, echo it
+connect_qcow2_to_nbd() { #find unused /dev/nbd* device to use, register it with the specified disk image, echo it
   sudo modprobe nbd || error "find_available_nbd: 'sudo modprobe nbd' failed"
   sync #wait for any writes to finish
+  
+  #detect format and add appropriate flags
+  local format_flag=""
+  if [[ "$1" == *.raw ]]; then
+    format_flag="--format=raw"
+  elif [[ "$1" == *.qcow2 ]]; then
+    format_flag="--format=qcow2"
+  else
+    # Try to detect format automatically as fallback
+    format_flag=""
+  fi
   
   #find a /dev/nbd* device not in use
   local i=0
@@ -166,7 +177,7 @@ connect_qcow2_to_nbd() { #find unused /dev/nbd* device to use, register it with 
   
   #make block devices for disk image, retry up to 5 times
   i=0
-  while [ $i != 5 ] && ! sudo qemu-nbd --connect="$nbd_device" "$1";do
+  while [ $i != 5 ] && ! sudo qemu-nbd $format_flag --connect="$nbd_device" "$1";do
     sudo qemu-nbd --disconnect "$nbd_device" 1>&2
     (unmount_qcow2) #unmounts it if it already is
     sleep 2
@@ -194,7 +205,7 @@ connect_qcow2_to_nbd() { #find unused /dev/nbd* device to use, register it with 
   echo "$nbd_device"
 }
 
-mount_qcow2() { #mount the $1 qcow2 disk image to /media/$USER/bvm-mount$rdp_port folder (rdp_port is just a convenient way to prevent conflict
+mount_qcow2() { #mount the $1 disk image to /media/$USER/bvm-mount$rdp_port folder (works with both qcow2 and raw)
   
   #find /dev/nbd* device not in use
   local nbd_device="$(connect_qcow2_to_nbd "$1")" || exit 1
@@ -208,7 +219,7 @@ mount_qcow2() { #mount the $1 qcow2 disk image to /media/$USER/bvm-mount$rdp_por
   fi
 }
 
-unmount_qcow2() { #unmount what was mounted by the mount_qcow2 function
+unmount_qcow2() { #unmount what was mounted by the mount_qcow2 function (works with both qcow2 and raw)
   #find which /dev/nbd* is used by this mountpoint, before unmounting it
   local nbd_device="/dev/$(lsblk -no MOUNTPOINTS,PKNAME | grep "^/media/$USER/bvm-mount$rdp_port " | awk '{print $2}' | head -n1)"
   [ "$nbd_device" == /dev/ ] && return 1
@@ -219,35 +230,6 @@ unmount_qcow2() { #unmount what was mounted by the mount_qcow2 function
   if [ ! -z "$nbd_device" ];then
     local errors
     errors="$(sudo qemu-nbd --disconnect "$nbd_device" 2>&1)" || error "unmount_qcow2: '$errors'"
-  fi
-  sudo rmdir /media/$USER/bvm-mount$rdp_port
-}
-
-mount_raw() { #mount the $1 raw disk image to /media/$USER/bvm-mount$rdp_port folder
-  
-  #find /dev/nbd* device not in use
-  local nbd_device="$(connect_qcow2_to_nbd "$1")" || exit 1
-  
-  sudo mkdir -p /media/$USER/bvm-mount$rdp_port
-  umount_retry /media/$USER/bvm-mount$rdp_port
-  if ! sudo mount ${nbd_device}p4 /media/$USER/bvm-mount$rdp_port ;then
-    #mount failed, unmount and cleanup
-    unmount_raw
-    error "mount_raw: mount command failed"
-  fi
-}
-
-unmount_raw() { #unmount what was mounted by the mount_raw function
-  #find which /dev/nbd* is used by this mountpoint, before unmounting it
-  local nbd_device="/dev/$(lsblk -no MOUNTPOINTS,PKNAME | grep "^/media/$USER/bvm-mount$rdp_port " | awk '{print $2}' | head -n1)"
-  [ "$nbd_device" == /dev/ ] && return 1
-  
-  umount_retry /media/$USER/bvm-mount$rdp_port
-  
-  #try to remove the nbd device only if we found it earlier
-  if [ ! -z "$nbd_device" ];then
-    local errors
-    errors="$(sudo qemu-nbd --disconnect "$nbd_device" 2>&1)" || error "unmount_raw: '$errors'"
   fi
   sudo rmdir /media/$USER/bvm-mount$rdp_port
 }
@@ -1317,18 +1299,18 @@ To get a fresh VM up and running, use a sequence like this:
     
     #check disk.raw and remove microsoft defender if debloat enabled
     mountpoint="/media/$USER/bvm-mount$rdp_port"
-    if ! (mount_raw "$vmdir/disk.raw") ;then
-      (unmount_raw)
+    if ! (mount_qcow2 "$vmdir/disk.raw") ;then
+      (unmount_qcow2)
       error "It appears that Windows installation was not completed in disk.raw. Mounting the hard disk image failed."
     elif [ ! -f "$mountpoint/Program Files/Qemu-ga/qemu-ga.exe" ];then #check for qemu guest agent to determine if it was fully installed
-      (unmount_raw)
+      (unmount_qcow2)
       error "It appears that Windows installation was not completed in disk.raw. C:/Program Files/Qemu-ga/qemu-ga.exe does not exist."
     fi
     
     remove_microsoft_defender "$mountpoint" || exit 1
     #if debloat is disabled, all this does is mount the disk.raw to make sure it seems complete
     
-    unmount_raw || exit 1
+    unmount_qcow2 || exit 1
     
     #for GUI: track which step was completed
     if [ 5 -gt "$(cat "$vmdir/gui-steps-complete")" ];then
@@ -1343,8 +1325,8 @@ To get a fresh VM up and running, use a sequence like this:
     
     #workaround for users who experienced microsoft defender removal failure on firstboot (https://github.com/Botspot/bvm/issues/19)
     if [ "$(cat "$vmdir/gui-steps-complete")" == 4 ];then #this will be 4 because firstboot failed after succeeding
-      (mount_raw "$vmdir/disk.raw" && remove_microsoft_defender "/media/$USER/bvm-mount$rdp_port" && echo 5 > "$vmdir/gui-steps-complete")
-      unmount_raw
+      (mount_qcow2 "$vmdir/disk.raw" && remove_microsoft_defender "/media/$USER/bvm-mount$rdp_port" && echo 5 > "$vmdir/gui-steps-complete")
+      unmount_qcow2
     fi
     
     #all users who created a VM before May 4th 2025 need to follow these instructions
@@ -1619,11 +1601,11 @@ To get a fresh VM up and running, use a sequence like this:
     ;;
     
   mount) #browse and change files in disk.raw
-    mount_raw "$vmdir/disk.raw" #will exit right here on error
-    trap "unmount_raw &>/dev/null" EXIT SIGINT
+    mount_qcow2 "$vmdir/disk.raw" #will exit right here on error
+    trap "unmount_qcow2 &>/dev/null" EXIT SIGINT
     status "$vmdir/disk.raw is now mounted to /media/$USER/bvm-mount$rdp_port"
     read -p "Press enter to unmount"
-    unmount_raw
+    unmount_qcow2
     ;;
     
   expand) #increase the size of disk.raw
@@ -1644,8 +1626,8 @@ To get a fresh VM up and running, use a sequence like this:
     status_green Done
     
     status -n "Getting ready to work on partitions... "
-    #now device-ify qcow2 and expand filesystem on partition 4
-    nbd_device="$(connect_qcow2_to_nbd "$vmdir/disk.qcow2")" || exit 1
+    #now device-ify raw disk and expand filesystem on partition 4
+    nbd_device="$(connect_qcow2_to_nbd "$vmdir/disk.raw")" || exit 1
     trap "sudo qemu-nbd --disconnect $nbd_device &>/dev/null" EXIT SIGINT
     status_green Done
     

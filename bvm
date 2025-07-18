@@ -252,21 +252,35 @@ download_windows_11arm64_22621() { #downloads older W11 version for ARMv8.0 CPUs
   local WIN_LANG="$(list_download_languages | grep ":${download_language}$" | awk -F: '{print $1}')"
   [ -z "$WIN_LANG" ] && error "download_windows_11arm64_22621: language must be specified in download_language variable. Get list of available languages by running $DIRECTORY/bvm list-languages"
   [ -z "$vmdir" ] && error "download_windows_11arm64_22621: download folder for installer.iso must be specified in vmdir variable"
-
+  
   status "Downloading Windows 11 ARM64 (${download_language})"
   
-  echo "  - Downloading directly from vault.maurodruwel.be..."
-  local URL="https://vault.maurodruwel.be/Windows/22H2/22621.5624/install.esd"
-  local SOURCE_FILE="$vmdir/image.esd"
+  echo "  - Getting ESD download URL..."
+  catalog="$(wget -nv -O- "https://worproject.com/dldserv/esd/getcatalog.php?build=22621.1702&arch=ARM64&edition=Professional")"
+  catalog="$(echo "$catalog" | sed 's/></>\n</g' | sed -n '/<Languages>/q;p' | sed -n '/^<LanguageCode>'"${WIN_LANG}"'/,${p;/^<\/File>/q}')"
+  
+  [ -z "$catalog" ] && error "Could not get list of Windows ESD releases. If you ran this step several times recently, the site likely temporarily banned your IP address. Give it time, and check if this site is accessible from your network: https://worproject.com/dldserv/esd/getcatalog.php"
   
   rm -rf "$vmdir/esdextract" || error "Failed to remove esdextract folder"
   mkdir "$vmdir/esdextract" || error "Directory creation failed"
   
-  if [ -f "$SOURCE_FILE" ];then
+  #Get download link, size, and SHA1 hash for ESD
+  local URL="$(echo "$catalog" | grep '<FilePath>' -m 1 | sed 's/<FilePath>//g' | sed 's/<\/FilePath>//g')"
+  local SIZE="$(echo "$catalog" | grep '<Size>' -m 1 | sed 's/<Size>//g' | sed 's/<\/Size>//g')"
+  local SHA1="$(echo "$catalog" | grep '<Sha1>' -m 1 | sed 's/<Sha1>//g' | sed 's/<\/Sha1>//g')"
+  local SOURCE_FILE="$vmdir/image.esd"
+  
+  if [ -f "$SOURCE_FILE" ] && [ "$SHA1" == "$(echo "  - Checking validity of already downloaded image.esd" 1>&2 ; sha1sum "$SOURCE_FILE" | awk '{print $1}')" ];then
     echo "  - Not downloading $SOURCE_FILE - file exists"
   else
-    echo "  - Downloading Windows ESD image from $URL"
-    wget -nv --show-progress "$URL" -O "$SOURCE_FILE" || error "Failed to download ESD image from $URL"
+    echo "  - Downloading Windows ESD image"
+    wget -nv --show-progress "$URL" -O "$SOURCE_FILE" || error "Failed to download ESD image"
+    echo "  - Verifying download... "
+    local LOCAL_SHA1="$(sha1sum "$SOURCE_FILE" | awk '{print $1}')"
+    if [ "$SHA1" != "$LOCAL_SHA1" ];then
+      rm -f "$SOURCE_FILE"
+      error "\nSuccessfully downloaded ESD image $SOURCE_FILE, but it appears to be corrupted. Please run this script again.\n(Expected SHA1 hash is $SHA1, but downloaded file has SHA1 hash $LOCAL_SHA1"
+    fi
     echo "Done"
   fi
   

@@ -234,7 +234,7 @@ download_windows_11arm64_22631() { #downloads older W11 version for ARMv8.0 CPUs
   status "Downloading Windows 11 ARM64 (${download_language})"
   
   echo "  - Getting ESD download URL..."
-  catalog="$(wget -nv -O- "https://worproject.com/dldserv/esd/getcatalog.php?build=22631.2861&arch=ARM64&edition=Professional")"
+  catalog="$(wget -nv -O- "https://worproject.com/dldserv/esd/getcatalog.php?build=22621.1702&arch=ARM64&edition=Professional")"
   catalog="$(echo "$catalog" | sed 's/></>\n</g' | sed -n '/<Languages>/q;p' | sed -n '/^<LanguageCode>'"${WIN_LANG}"'/,${p;/^<\/File>/q}')"
   
   [ -z "$catalog" ] && error "Could not get list of Windows ESD releases. If you ran this step several times recently, the site likely temporarily banned your IP address. Give it time, and check if this site is accessible from your network: https://worproject.com/dldserv/esd/getcatalog.php"
@@ -615,7 +615,7 @@ qemu_newer_than() { #check if QEMU is newer than specified version, return 0 if 
 
 update_check() { #check for updates and reload the script if necessary
   localhash="$(cd "$DIRECTORY" ; git rev-parse HEAD)"
-  latesthash="$(git ls-remote https://github.com/Botspot/bvm HEAD | awk '{print $1}')"
+  latesthash="$(git ls-remote https://github.com/MauroDruwel/bvm HEAD | awk '{print $1}')"
   if [ "$localhash" != "$latesthash" ] && [ ! -z "$latesthash" ] && [ ! -z "$localhash" ];then
     if [ "$disable_updates" == true ];then
       echo "Updates available, but you have auto-updates disabled."
